@@ -1,9 +1,13 @@
 use reqwest::Client;
+use rocket::futures::TryFutureExt;
 use rss::{CategoryBuilder, Channel, GuidBuilder, ImageBuilder, Item, ItemBuilder};
 use serde::Deserialize;
+use tokio::sync::{mpsc::Sender, oneshot::channel};
+
+use crate::musicbrainz::{MbzRequest, ZWSP};
 
 #[derive(Debug, Deserialize)]
-pub struct Release {
+pub struct LbzRelease {
     artist_credit_name: String,
     artist_mbids: Vec<String>,
     caa_id: Option<i64>,
@@ -21,7 +25,7 @@ pub struct Release {
 
 #[derive(Debug, Deserialize)]
 pub struct Releases {
-    releases: Vec<Release>,
+    releases: Vec<LbzRelease>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -29,16 +33,35 @@ pub struct Payload {
     payload: Releases,
 }
 
+pub struct ListenBrainz {
+    client: Client,
+    sender: Sender<MbzRequest>,
+}
+
 const API_URL: &str = "https://api.listenbrainz.org/1/";
 const ART_URL: &str = "https://coverartarchive.org/release/";
 const FRONT_URL: &str = "https://listenbrainz.org/";
 
-impl Payload {
-    pub async fn to_feed(client: &Client, user: String, days: u32) -> Result<Channel, String> {
+impl ListenBrainz {
+    pub fn new(sender: Sender<MbzRequest>) -> ListenBrainz {
+        let client = Client::builder()
+            .user_agent(format!(
+                "ListenBrainz Fetcher: {}/{}",
+                env!("CARGO_PKG_NAME"),
+                env!("CARGO_PKG_VERSION")
+            ))
+            .build()
+            .expect("Failed to build client");
+
+        ListenBrainz { client, sender }
+    }
+
+    pub async fn to_feed(&self, user: String, days: u32) -> Result<Channel, String> {
         let url = format!("{}user/{}/fresh_releases", API_URL, user);
         let title = format!("Releases for {}", user);
 
-        let resp = client
+        let resp = self
+            .client
             .get(&url)
             .query(&[("sort", "release_date"), ("days", &days.to_string())])
             .send()
@@ -46,9 +69,9 @@ impl Payload {
             .map_err(|e| e.to_string())?;
         let json = resp.json::<Payload>().await.map_err(|e| e.to_string())?;
 
-        let mut channel = Channel::default();
-        channel.set_title(title);
-        channel.set_image(
+        let mut chan = Channel::default();
+        chan.set_title(title);
+        chan.set_image(
             ImageBuilder::default()
                 .link(String::from(
                     "https://listenbrainz.org/static/img/listenbrainz-logo.svg",
@@ -59,14 +82,34 @@ impl Payload {
                 .title(String::from("ListenBrainz logo"))
                 .build(),
         );
-        channel.set_link(url);
-        channel.set_language(String::from("en-US"));
+        chan.set_link(url);
+        chan.set_language(String::from("en-US"));
+
+        let releases: Vec<String> = json
+            .payload
+            .releases
+            .iter()
+            .map(|release| release.release_mbid.clone())
+            .collect();
+
+        let (tx, rx) = channel();
+
+        self.sender
+            .send((releases, tx))
+            .map_err(|err| err.to_string())
+            .await?;
+
+        let resp = rx
+            .await
+            .map_err(|err| err.to_string())?
+            .map_err(|err| err.to_string())?;
 
         let items: Vec<Item> = json
             .payload
             .releases
             .iter()
-            .map(|release| {
+            .enumerate()
+            .map(|(idx, release)| {
                 let permalink = format!("{}release/{}", FRONT_URL, release.release_mbid);
 
                 let categories = match release.release_group_primary_type {
@@ -81,13 +124,44 @@ impl Payload {
                     .value(permalink.clone())
                     .build();
 
-                let thumb_url = format!("{}{}/front-250", ART_URL, release.release_mbid);
+                let mbz_release = &resp[idx];
+
+                let image = if mbz_release.has_front {
+                    let thumb_url = format!("{}{}/front-250", ART_URL, release.release_mbid);
+                    format!(
+                        r#"<img src="{}" alt="{}" width="300px" height="300px" />"#,
+                        thumb_url, release.release_name
+                    )
+                } else {
+                    "".to_string()
+                };
+
+                let urls = if mbz_release.urls.len() > 0 {
+                    let all_urls = mbz_release.urls.split(ZWSP).collect::<Vec<_>>().chunks(2).map(|item| 
+                    
+                        format!(r#"<li>{}: <a href="{}" target="_blank" rel="noreferrer noopener">{}</a></li>"#, item[0], item[1], item[1])
+                    ).collect::<Vec<_>>()
+                    .join("\n");
+
+                    if all_urls.len() > 0 {
+                        format!(r#"<div>
+                            <h4>Available at: </h4>
+                            <ul>{}</ul>
+                        </div>"#, all_urls)
+                    } else {
+                        "".to_string()
+                    }
+                } else {
+                    "".to_string()
+                };
+
                 let description = Some(format!(
                     r#"<div>
-                        <img src="{}" alt="{}" width="300px" height="300px" />
+                        {}
                         <h3>By {}</h3>
+                        {}
                     </div>"#,
-                    thumb_url, release.release_name, release.artist_credit_name
+                    image, release.artist_credit_name, urls
                 ));
 
                 let full_url = format!("{}{}/front-500", ART_URL, release.release_mbid);
@@ -150,9 +224,9 @@ impl Payload {
             })
             .collect();
 
-        channel.set_items(items);
+        chan.set_items(items);
 
         // channel.validate().map_err(|e| e.to_string())?;
-        Ok(channel)
+        Ok(chan)
     }
 }
