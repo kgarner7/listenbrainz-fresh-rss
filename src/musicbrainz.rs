@@ -1,4 +1,3 @@
-use core::panic;
 use std::mem::take;
 
 use diesel::{insert_into, prelude::*};

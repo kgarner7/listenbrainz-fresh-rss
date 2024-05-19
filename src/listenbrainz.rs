@@ -126,15 +126,31 @@ impl ListenBrainz {
 
                 let mbz_release = &resp[idx];
 
-                let image = if mbz_release.has_front {
+                let (image, full) = if mbz_release.has_front {
                     let thumb_url = format!("{}{}/front-250", ART_URL, release.release_mbid);
-                    format!(
+                    let thumb_img = format!(
                         r#"<img src="{}" alt="{}" width="300px" height="300px" />"#,
                         thumb_url, release.release_name
-                    )
+                    );
+
+                    let full_url = format!("{}{}/front-500", ART_URL, release.release_mbid);
+                    let full_img = format!(
+                        r#"<div><img src="{}" alt="{}" width="500px" height="500px" /></div>"#,
+                        full_url, release.release_name
+                    );
+
+                    (thumb_img, full_img)
                 } else {
-                    "".to_string()
+                    ("".to_string(), "".to_string())
                 };
+
+                let description = Some(format!(
+                    r#"<div>
+                        {}
+                        <h3>By {}</h3>
+                    </div>"#,
+                    image, release.artist_credit_name
+                ));
 
                 let urls = if mbz_release.urls.len() > 0 {
                     let all_urls = mbz_release.urls.split(ZWSP).collect::<Vec<_>>().chunks(2).map(|item| 
@@ -155,17 +171,6 @@ impl ListenBrainz {
                     "".to_string()
                 };
 
-                let description = Some(format!(
-                    r#"<div>
-                        {}
-                        <h3>By {}</h3>
-                        {}
-                    </div>"#,
-                    image, release.artist_credit_name, urls
-                ));
-
-                let full_url = format!("{}{}/front-500", ART_URL, release.release_mbid);
-
                 let content = if release.artist_mbids.len() == 1 {
                     let artist_url = format!("{}artist/{}", FRONT_URL, release.artist_mbids[0]);
 
@@ -173,14 +178,15 @@ impl ListenBrainz {
                         r#"<div>
                             <h1><a href="{}" rel="noreferrer noopener">{}</a> </h1>
                             <h3>By <a href="{}" rel="noreferrer noopener">{}</a></h3>
-                            <div><img src="{}" alt="{}" width="500px" height="500px" /></div>
+                            {}
+                            {}
                         </div>"#,
                         permalink,
                         release.release_name,
                         artist_url,
                         release.artist_credit_name,
-                        full_url,
-                        release.release_name,
+                        full,
+                        urls
                     ))
                 } else {
                     let all_artists = release
@@ -201,14 +207,15 @@ impl ListenBrainz {
                             <h1><a href="{}" rel="noreferrer noopener">{}</a> </h1>
                             <h3>By {}</h3>
                             <div><ul>{}</ul></div>
-                            <div><img src="{}" alt="{}" width="500px" height="500px" /></div>
+                            {}
+                            {}
                         </div>"#,
                         permalink,
                         release.release_name,
                         release.artist_credit_name,
                         all_artists,
-                        full_url,
-                        release.release_name,
+                        full,
+                        urls,
                     ))
                 };
 
