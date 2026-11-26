@@ -40,7 +40,7 @@ pub struct ListenBrainz {
 
 const API_URL: &str = "https://api.listenbrainz.org/1/";
 const ART_URL: &str = "https://coverartarchive.org/release/";
-const FRONT_URL: &str = "https://listenbrainz.org/";
+const FRONT_URL: &str = "https://musicbrainz.org/";
 
 impl ListenBrainz {
     pub fn new(sender: Sender<MbzRequest>) -> ListenBrainz {
